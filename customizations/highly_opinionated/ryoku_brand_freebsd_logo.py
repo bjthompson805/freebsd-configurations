@@ -1,4 +1,6 @@
 import json
+import shutil
+import subprocess
 from pathlib import Path
 
 from customizations import util
@@ -6,6 +8,9 @@ from customizations.base import Customization, Detection, Status
 
 BRAND_JSON = Path.home() / ".config" / "ryoku" / "brand.json"
 FREEBSD_LOGO = Path("/boot/images/freebsd-logo-rev.png")
+# The shipped PNG has transparent padding around the orb, and Ryoku fits the
+# whole image into the mark's box, so a trimmed copy renders noticeably larger.
+TRIMMED_LOGO = BRAND_JSON.parent / "freebsd-logo-trimmed.png"
 
 
 class RyokuBrandFreebsdLogo(Customization):
@@ -21,7 +26,8 @@ class RyokuBrandFreebsdLogo(Customization):
             "the base system's FreeBSD-bootloader package, which draws it in the boot "
             "menu). Applying this sets markImage to that file, so the pill, launcher, "
             "and other branded surfaces show the FreeBSD orb instead of Ryoku's own "
-            "mark.\n\n"
+            "mark. The logo's transparent padding is trimmed (into "
+            f"{TRIMMED_LOGO}) so the orb fills the mark's space.\n\n"
             "markTint is also turned off: with it on (Ryoku's default) the orb is "
             "recoloured to your theme's accent instead of FreeBSD red.\n\n"
             "Note: if Ryoku Settings (Super + ,) is open, save or close it before "
@@ -37,22 +43,25 @@ class RyokuBrandFreebsdLogo(Customization):
             return Detection(Status.NOT_APPLICABLE, "Ryoku is not installed (no ~/.config/ryoku/brand.json)")
         if not FREEBSD_LOGO.exists():
             return Detection(Status.NOT_APPLICABLE, f"{FREEBSD_LOGO} is not present on this system")
+        if not shutil.which("magick"):
+            return Detection(Status.NOT_APPLICABLE, "ImageMagick (magick) is not installed")
         try:
             data = self._load()
         except (json.JSONDecodeError, OSError):
             return Detection(Status.NOT_APPLICABLE, "brand.json could not be parsed")
         current = data.get("markImage", "")
-        if current.removeprefix("file://") == str(FREEBSD_LOGO) and data.get("markTint") is False:
+        if current.removeprefix("file://") == str(TRIMMED_LOGO) and TRIMMED_LOGO.exists() and data.get("markTint") is False:
             return Detection(Status.ALREADY_APPLIED, "markImage is already the FreeBSD logo")
         return Detection(Status.APPLICABLE, f"markImage is currently {current!r}", value=current)
 
     def apply(self) -> str:
         util.backup(BRAND_JSON)
         data = self._load()
-        data["markImage"] = str(FREEBSD_LOGO)
+        subprocess.run(["magick", str(FREEBSD_LOGO), "-trim", "+repage", str(TRIMMED_LOGO)], check=True)
+        data["markImage"] = str(TRIMMED_LOGO)
         data["markTint"] = False
         BRAND_JSON.write_text(json.dumps(data, indent=4) + "\n")
-        return f"Updated {BRAND_JSON} to use {FREEBSD_LOGO}."
+        return f"Updated {BRAND_JSON} to use {TRIMMED_LOGO} (trimmed from {FREEBSD_LOGO})."
 
 
 CUSTOMIZATION = RyokuBrandFreebsdLogo()
