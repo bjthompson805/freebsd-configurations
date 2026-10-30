@@ -1,10 +1,7 @@
 import re
-from pathlib import Path
 
 from customizations import util
 from customizations.base import Customization, Detection, Status
-
-KITTY_CONF = Path.home() / ".config" / "kitty" / "kitty.conf"
 
 # kitty's own built-in defaults (confirmed against /usr/local/share/doc/kitty/kitty.conf
 # for the installed version), used when a setting isn't present anywhere in the file.
@@ -37,9 +34,9 @@ class KittyScrollSpeed(Customization):
             return default
 
     def detect(self) -> Detection:
-        if not KITTY_CONF.exists():
+        if util.kitty_user_target() is None:
             return Detection(Status.NOT_APPLICABLE, "no kitty config found (~/.config/kitty/kitty.conf)")
-        text = KITTY_CONF.read_text()
+        text = util.kitty_effective_text()
 
         if MARKER in text:
             return Detection(Status.ALREADY_APPLIED, "kitty scroll speed was already tripled by this tool")
@@ -72,30 +69,25 @@ class KittyScrollSpeed(Customization):
             "touchpad):\n\n"
             f"{util.indent(f'wheel_scroll_multiplier {_fmt(new_wheel)}')}\n"
             f"{util.indent(f'touch_scroll_multiplier {_fmt(new_touch)}')}\n\n"
-            "These are appended at the end of the file, after the existing "
-            "globinclude user.conf line -- consistent with the other "
-            "overrides already placed there -- so they win even if "
-            "user.conf sets its own value.\n\n"
+            f"These are written to {util.kitty_user_target()}, which "
+            "kitty reads last, so they win over the shipped kitty.conf "
+            "and survive Ryoku updates.\n\n"
             "Trade-off: scrolling becomes much more sensitive -- a light "
             "wheel flick or touchpad swipe will jump three times as far "
             "through scrollback as before."
         )
 
     def apply(self) -> str:
-        util.backup(KITTY_CONF)
-        text = KITTY_CONF.read_text()
+        text = util.kitty_effective_text()
         wheel = self._last_value(text, WHEEL_RE, DEFAULT_WHEEL_MULTIPLIER) * SPEEDUP
         touch = self._last_value(text, TOUCH_RE, DEFAULT_TOUCH_MULTIPLIER) * SPEEDUP
 
-        text = (
-            text.rstrip("\n")
-            + f"\n\n# {MARKER}"
-            + f"\nwheel_scroll_multiplier {_fmt(wheel)}"
-            + f"\ntouch_scroll_multiplier {_fmt(touch)}\n"
+        target = util.kitty_set(
+            {"wheel_scroll_multiplier": _fmt(wheel), "touch_scroll_multiplier": _fmt(touch)},
+            MARKER,
         )
-        KITTY_CONF.write_text(text)
         return (
-            f"In {KITTY_CONF}: set wheel_scroll_multiplier to {_fmt(wheel)} "
+            f"In {target}: set wheel_scroll_multiplier to {_fmt(wheel)} "
             f"and touch_scroll_multiplier to {_fmt(touch)} (3x their "
             "previous effective values). Recent kitty versions auto-reload "
             "their config on save; if yours doesn't, restart kitty to see "

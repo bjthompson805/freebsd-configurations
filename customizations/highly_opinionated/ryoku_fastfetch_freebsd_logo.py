@@ -7,6 +7,13 @@ from customizations.base import Customization, Detection, Status
 
 FASTFETCH_DIR = Path.home() / ".config" / "fastfetch"
 CONFIG_JSONC = FASTFETCH_DIR / "config.jsonc"
+# Ryoku's ryoku-fastfetch wrapper passes the flags in user.args after
+# config.jsonc, which install.sh overwrites on every run; user.args it never
+# ships or touches.
+USER_ARGS = FASTFETCH_DIR / "user.args"
+LOGO_FLAGS = ("--logo", "-l")
+HEIGHT_FLAG = "--logo-height"
+MARKER = "freebsd-configurations: FreeBSD logo instead of the Ryoku emblem"
 RYOKU_EMBLEM = FASTFETCH_DIR / "fastfetch-emblem.png"
 SYSTEM_FREEBSD_LOGO = Path("/boot/images/freebsd-logo-rev.png")
 LOCAL_FREEBSD_LOGO = FASTFETCH_DIR / "freebsd-logo.png"
@@ -75,6 +82,42 @@ def _set_logo_field(text: str, regex: re.Pattern, value: str) -> str:
     return text[:match.start(2)] + value + text[match.end(2):]
 
 
+def _wrapper_reads_user_args() -> bool:
+    wrapper = shutil.which("ryoku-fastfetch")
+    try:
+        return wrapper is not None and "user.args" in Path(wrapper).read_text(errors="replace")
+    except OSError:
+        return False
+
+
+def _user_arg(flags: tuple[str, ...]) -> str | None:
+    """The value of the last of `flags` in user.args (the one that wins)."""
+    if not USER_ARGS.exists():
+        return None
+    value = None
+    for line in USER_ARGS.read_text().splitlines():
+        parts = line.split(None, 1)
+        if len(parts) == 2 and parts[0] in flags:
+            value = parts[1].strip()
+    return value
+
+
+def _write_user_args() -> None:
+    text = USER_ARGS.read_text() if USER_ARGS.exists() else ""
+    if USER_ARGS.exists():
+        util.backup(USER_ARGS)
+    kept = [
+        line for line in text.splitlines()
+        if line.strip() != f"# {MARKER}"
+        and (line.split() or [""])[0] not in LOGO_FLAGS + (HEIGHT_FLAG,)
+    ]
+    body = "\n".join(kept).rstrip("\n")
+    USER_ARGS.write_text(
+        (body + "\n\n" if body else "")
+        + f"# {MARKER}\n--logo {LOCAL_FREEBSD_LOGO_SOURCE}\n{HEIGHT_FLAG} {LOGO_HEIGHT}\n"
+    )
+
+
 class RyokuFastfetchFreebsdLogo(Customization):
     id = "ryoku-fastfetch-freebsd-logo"
     title = "Show the FreeBSD logo in fastfetch instead of the Ryoku emblem (Ryoku)"
@@ -90,9 +133,17 @@ class RyokuFastfetchFreebsdLogo(Customization):
             "original moving -- and points logo.source at it, so the fastfetch "
             "greeting shows the FreeBSD orb instead of Ryoku's own emblem. "
             f"logo.height is also set to {LOGO_HEIGHT} so the orb isn't "
-            "stretched. Only those values are rewritten, so the comments in "
-            f"config.jsonc are kept. The original emblem ({RYOKU_EMBLEM}) is left in place, so "
-            "reverting is just pointing logo.source back."
+            "stretched. "
+            + (
+                f"Both are written as fastfetch flags to {USER_ARGS}, which "
+                "Ryoku's ryoku-fastfetch reads after config.jsonc and never "
+                "overwrites, so this survives Ryoku updates. "
+                if _wrapper_reads_user_args() else
+                "Only those values are rewritten in config.jsonc, so its "
+                "comments are kept. "
+            )
+            + f"The original emblem ({RYOKU_EMBLEM}) is left in place, so "
+            "reverting is just pointing the logo back."
         )
 
     def detect(self) -> Detection:
@@ -107,10 +158,15 @@ class RyokuFastfetchFreebsdLogo(Customization):
         except OSError:
             text = ""
         current = _logo_field(text, _SOURCE_RE)
-        if current is None or _logo_field(text, _HEIGHT_RE) is None:
+        height = _logo_field(text, _HEIGHT_RE)
+        if current is None or height is None:
             return Detection(Status.NOT_APPLICABLE, "no logo.source/logo.height found in config.jsonc")
+        # flags in user.args win over config.jsonc, when the wrapper reads it.
+        if _wrapper_reads_user_args():
+            current = _user_arg(LOGO_FLAGS) or current
+            height = _user_arg((HEIGHT_FLAG,)) or height
         if (current.removeprefix("file://") == LOCAL_FREEBSD_LOGO_SOURCE and LOCAL_FREEBSD_LOGO.exists()
-                and _logo_field(text, _HEIGHT_RE) == str(LOGO_HEIGHT)):
+                and height == str(LOGO_HEIGHT)):
             return Detection(Status.ALREADY_APPLIED, "logo.source is already the FreeBSD logo")
         return Detection(Status.APPLICABLE, f"logo.source is currently {current!r}", value=current)
 
@@ -118,6 +174,9 @@ class RyokuFastfetchFreebsdLogo(Customization):
         # /boot/images files are mode 0444, which copy2 would carry over and
         # then refuse to overwrite on a later re-apply -- so copy bytes only.
         shutil.copyfile(SYSTEM_FREEBSD_LOGO, LOCAL_FREEBSD_LOGO)
+        if _wrapper_reads_user_args():
+            _write_user_args()
+            return f"Copied {SYSTEM_FREEBSD_LOGO} to {LOCAL_FREEBSD_LOGO} and set the logo in {USER_ARGS}."
         util.backup(CONFIG_JSONC)
         text = CONFIG_JSONC.read_text()
         text = _set_logo_field(text, _SOURCE_RE, LOCAL_FREEBSD_LOGO_SOURCE)

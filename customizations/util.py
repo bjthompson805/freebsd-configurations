@@ -10,6 +10,8 @@ from pathlib import Path
 
 HYPR_DIR = Path.home() / ".config" / "hypr"
 FISH_DIR = Path.home() / ".config" / "fish"
+KITTY_DIR = Path.home() / ".config" / "kitty"
+KITTY_CONF = KITTY_DIR / "kitty.conf"
 
 
 def indent(text: str, prefix: str = "  ") -> str:
@@ -150,6 +152,66 @@ def fish_user_target() -> Path | None:
     if "user.fish" in config_fish.read_text():
         return FISH_DIR / "user.fish"
     return config_fish
+
+
+def kitty_conf_paths() -> list[Path]:
+    """The kitty config files that exist, in the order kitty reads them.
+
+    Ryoku's kitty.conf ends with `globinclude user.conf`, so user.conf is
+    read last and its settings win.
+    """
+    if not KITTY_CONF.exists():
+        return []
+    paths = [KITTY_CONF]
+    user_conf = KITTY_DIR / "user.conf"
+    if "user.conf" in KITTY_CONF.read_text() and user_conf.exists():
+        paths.append(user_conf)
+    return paths
+
+
+def kitty_effective_text() -> str:
+    """Every kitty config file kitty reads, joined in load order, so the
+    last match of a setting is its effective value."""
+    return "\n".join(p.read_text() for p in kitty_conf_paths())
+
+
+def kitty_user_target() -> Path | None:
+    """Where kitty settings should be written.
+
+    Prefers ~/.config/kitty/user.conf when kitty.conf includes it: on a
+    Ryoku-managed system kitty.conf is overwritten from the repo by every
+    install.sh run, while user.conf is never shipped or touched. Decided by
+    whether kitty.conf includes it, not by whether user.conf exists yet, as
+    with fish_user_target(). Falls back to kitty.conf itself for a plain
+    kitty setup with no such include.
+    """
+    if not KITTY_CONF.exists():
+        return None
+    if "user.conf" in KITTY_CONF.read_text():
+        return KITTY_DIR / "user.conf"
+    return KITTY_CONF
+
+
+def kitty_set(settings: dict[str, str], comment: str) -> Path:
+    """Write `settings` to kitty_user_target() as one block under `# comment`.
+
+    Earlier lines for the same keys in that file (and an earlier copy of
+    the block's comment) are dropped first, so re-applying never stacks
+    duplicates. Returns the file written.
+    """
+    target = kitty_user_target()
+    text = target.read_text() if target.exists() else ""
+    if target.exists():
+        backup(target)
+    kept = [
+        line for line in text.splitlines()
+        if line.strip() != f"# {comment}"
+        and (line.split() or [""])[0] not in settings
+    ]
+    body = "\n".join(kept).rstrip("\n")
+    block = "\n".join(f"{key} {value}" for key, value in settings.items())
+    target.write_text((body + "\n\n" if body else "") + f"# {comment}\n{block}\n")
+    return target
 
 
 def append_block(path: Path, block: str, marker: str, comment: str = "#") -> None:
